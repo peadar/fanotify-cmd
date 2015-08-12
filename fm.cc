@@ -177,7 +177,8 @@ public:
 static void
 usage(std::ostream &os)
 {
-    os << "usage: " 
+    os << "usage: [options] <files...>" 
+        << "\nOptions:"
         << "\n\t-a:\tmonitor access"
         << "\n\t-m:\tmonitor modify"
         << "\n\t-o:\tmonitor open"
@@ -190,11 +191,6 @@ usage(std::ostream &os)
 int
 main(int argc, char *argv[])
 {
-    int fd = fanotify_init(FAN_CLASS_NOTIF, O_RDONLY);
-    if (fd == -1) {
-        std::clog << "fa init failed: " << Errno() << "\n";
-        exit(1);
-    }
 
     uint64_t mask = 0;
     int c;
@@ -211,11 +207,19 @@ main(int argc, char *argv[])
                 break;
         }
     }
+    if (argc == optind)
+        usage(std::clog);
 
     if (mask == 0)
         mask = FAN_MODIFY|FAN_CLOSE;
 
     std::clog << "mask events: " << FanMask(mask) << "\n";
+
+    int fd = fanotify_init(FAN_CLASS_NOTIF, O_RDONLY);
+    if (fd == -1) {
+        std::clog << "fa init failed: " << Errno() << "\n";
+        exit(1);
+    }
 
     for (size_t i = optind; i < argc; ++i) {
         int rc = fanotify_mark(fd, FAN_MARK_ADD, mask, AT_FDCWD, argv[i]);
