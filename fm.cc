@@ -10,98 +10,25 @@
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <utility>
+#include <exception>
 
-typedef int syserror_t;
-
-struct Errno {
+class Errno : public std::exception {
+public:
+    typedef int syserror_t;
+private:
     syserror_t err;
-    Errno(syserror_t err_ = -1) : err(err_ == -1 ? errno : err) {}
+    const char *str;
+    mutable std::string formattedText;
+public:
+    const char *what() const throw() override;
+    Errno(const char *str_, syserror_t err_ = -1) : str(str_), err(err_ == -1 ? errno : err) {}
 };
-
-std::ostream &
-operator << (std::ostream &os, const Errno &e) {
-    return os << strerror(e.err);
-}
 
 struct FanMask {
-    __u64 mask;
-    FanMask(__u64 mask_) : mask(mask_) {}
+    uint64_t mask;
+    FanMask(uint64_t mask_) : mask(mask_) {}
 };
-
-std::ostream &
-operator << (std::ostream &os, const FanMask &e) {
-    struct tableent {
-        __u64 value;
-        const char *name;
-    };
-    #define ENT(a) { a, #a }
-    static tableent table[] = {
-        ENT(FAN_ACCESS),
-        ENT(FAN_OPEN),
-        ENT(FAN_MODIFY),
-        ENT(FAN_CLOSE_WRITE),
-        ENT(FAN_CLOSE_NOWRITE),
-        ENT(FAN_Q_OVERFLOW),
-        ENT(FAN_ACCESS_PERM),
-        ENT(FAN_OPEN_PERM),
-        { 0, 0 }
-    };
-    const char *sep = "";
-    for (size_t i = 0; table[i].name; ++i) {
-        if (e.mask & table[i].value) {
-            os << sep << table[i].name;
-            sep = "|";
-        }
-    }
-    return os;
-}
-
-struct FileFlags {
-    int flags;
-    FileFlags(int flags_) : flags(flags_) {}
-};
-
-std::ostream &
-operator << (std::ostream &os, const FileFlags &e) {
-    struct tableent {
-        int value;
-        const char *name;
-    };
-    #define ENT(a) { a, #a }
-    static tableent table[] = {
-        ENT(O_CREAT),
-        ENT(O_EXCL),
-        ENT(O_NOCTTY),
-        ENT(O_TRUNC),
-        ENT(O_APPEND),
-        ENT(O_NONBLOCK),
-        ENT(O_DSYNC),
-        ENT(O_DIRECT),
-        ENT(O_LARGEFILE),
-        ENT(O_DIRECTORY),
-        ENT(O_CLOEXEC),
-        ENT(FAN_OPEN_PERM),
-        { 0, 0 }
-    };
-    const char *sep = "";
-
-    int mode = e.flags & O_ACCMODE;
-
-    switch (mode) {
-        case O_RDWR: os << "O_RDWR"; break;
-        case O_RDONLY: os << "O_RDONLY"; break;
-        case O_WRONLY: os << "O_WRONLY"; break;
-        default : os << "??ACCESS??"; break;
-    }
-
-    for (size_t i = 0; table[i].name; ++i) {
-        if (e.flags & table[i].value) {
-            os << "|" << table[i].name;
-        }
-    }
-    return os;
-}
-
 
 struct FDCloser {
     int fd;
@@ -112,67 +39,115 @@ struct FDCloser {
 
 struct Proc {
     pid_t pid;
-
-    std::string procfsPath(const char *stem, ...) {
-        va_list args;
-        va_start(args, stem);
-
-        char path[PATH_MAX];
-        char *p = path;
-        char *e = path + sizeof path;
-        p += snprintf(p, e - p, "/proc/%d/", int(pid));
-        vsnprintf(p, e - p, stem, args);
-        va_end(args);
-        return path;
-    }
-
-    std::string readData(int fd) {
-        std::ostringstream os;
-        char buf[1024];
-        for (;;) {
-            ssize_t rc = read(fd, buf, sizeof buf);
-            switch (rc) {
-                case 0:
-                   return os.str();
-                case -1:
-                    throw Errno();
-                default:
-                    for (size_t i = 0; i < rc; ++i)
-                        if (buf[i] == '\0')
-                            buf[i] = ' ';
-                    os.write(buf, rc);
-            }
-        }
-    }
+    std::string procfsPath(const char *stem, ...); 
+    std::string readData(int fd);
 public:
-    Proc(pid_t pid_) : pid(pid_) {
-    }
-
-    std::string commandLine() {
-        std::string name = procfsPath("cmdline");
-        try {
-            FDCloser fd = open(name.c_str(), O_RDONLY);
-            if (fd == -1)
-                throw Errno();
-            return readData(fd);
-        }
-        catch (const Errno &err) {
-            std::ostringstream errstr;
-            errstr << "(" << err << ")";
-            return errstr.str();
-        }
-    }
-
-    std::string filePath(int fd) {
-        std::string name = procfsPath("fd/%d", fd);
-        char buf[PATH_MAX];
-        int rc = readlink(name.c_str(), buf, sizeof buf - 1);
-        if (rc == -1)
-            throw Errno();
-        buf[rc] = 0;
-        return buf;
-    }
+    Proc(pid_t pid_) : pid(pid_) { }
+    std::string commandLine();
+    std::string filePath(int fd);
 };
+
+std::ostream &
+operator << (std::ostream &os, const std::exception &e) {
+    return os << e.what();
+}
+
+std::ostream &
+operator << (std::ostream &os, const FanMask &e) {
+    #define ENT(a) { a, #a }
+    static std::pair<uint64_t, const char *> table[] = {
+        ENT(FAN_ACCESS),
+        ENT(FAN_OPEN),
+        ENT(FAN_MODIFY),
+        ENT(FAN_CLOSE_WRITE),
+        ENT(FAN_CLOSE_NOWRITE),
+        ENT(FAN_Q_OVERFLOW),
+        ENT(FAN_ACCESS_PERM),
+        ENT(FAN_OPEN_PERM),
+        { 0, 0 }
+    };
+    #undef ENT
+    const char *sep = "";
+    for (size_t i = 0; table[i].second; ++i) {
+        if (e.mask & table[i].first) {
+            os << sep << table[i].second;
+            sep = "|";
+        }
+    }
+    return os;
+}
+
+const char *
+Errno::what() const throw()
+{
+    if (formattedText.size() == 0)
+        formattedText = std::string(str) + ": " + strerror(err);
+    return formattedText.c_str();
+}
+
+std::string
+Proc::procfsPath(const char *stem, ...)
+{
+    va_list args;
+    va_start(args, stem);
+    char path[PATH_MAX];
+    char *p = path;
+    char *e = path + sizeof path;
+    p += snprintf(p, e - p, "/proc/%d/", int(pid));
+    vsnprintf(p, e - p, stem, args);
+    va_end(args);
+    return path;
+}
+
+std::string
+Proc::readData(int fd)
+{
+    std::ostringstream os;
+    char buf[1024];
+    for (;;) {
+        ssize_t rc = read(fd, buf, sizeof buf);
+        switch (rc) {
+            case 0:
+               return os.str();
+            case -1:
+                throw Errno("read /proc");
+            default:
+                for (size_t i = 0; i < rc; ++i)
+                    if (buf[i] == '\0')
+                        buf[i] = ' ';
+                os.write(buf, rc);
+        }
+    }
+}
+
+std::string
+Proc::commandLine()
+{
+    std::string name = procfsPath("cmdline");
+    try {
+        FDCloser fd = open(name.c_str(), O_RDONLY);
+        if (fd == -1)
+            throw Errno("open cmdline");
+        return readData(fd);
+    }
+    catch (const Errno &err) {
+        std::ostringstream errstr;
+        errstr << "(" << err << ")";
+        return errstr.str();
+    }
+}
+
+std::string
+Proc::filePath(int fd)
+{
+    std::string name = procfsPath("fd/%d", fd);
+    char buf[PATH_MAX];
+    int rc = readlink(name.c_str(), buf, sizeof buf - 1);
+    if (rc == -1)
+        throw Errno("readlink");
+    buf[rc] = 0;
+    return buf;
+}
 
 static void
 usage(std::ostream &os)
@@ -191,7 +166,6 @@ usage(std::ostream &os)
 int
 main(int argc, char *argv[])
 {
-
     uint64_t mask = 0;
     int c;
     while ((c = getopt(argc, argv, "aomrwh")) != -1) {
@@ -209,54 +183,47 @@ main(int argc, char *argv[])
     }
     if (argc == optind)
         usage(std::clog);
-
     if (mask == 0)
         mask = FAN_MODIFY|FAN_CLOSE;
+    try {
+        std::clog << "checking for events " << FanMask(mask) << "\n";
+        int fd = fanotify_init(FAN_CLASS_NOTIF, O_RDONLY);
+        if (fd == -1)
+            throw Errno("fanotify_init");
 
-    std::clog << "mask events: " << FanMask(mask) << "\n";
+        for (size_t i = optind; i < argc; ++i)
+            if (fanotify_mark(fd, FAN_MARK_ADD, mask, AT_FDCWD, argv[i]) == -1)
+                throw Errno("fanotify_mark failed");
 
-    int fd = fanotify_init(FAN_CLASS_NOTIF, O_RDONLY);
-    if (fd == -1) {
-        std::clog << "fa init failed: " << Errno() << "\n";
-        exit(1);
-    }
-
-    for (size_t i = optind; i < argc; ++i) {
-        int rc = fanotify_mark(fd, FAN_MARK_ADD, mask, AT_FDCWD, argv[i]);
-        if (rc == -1) {
-            std::clog << "failed to mark FD: " << Errno() << "\n";
-            exit(1);
-        }
-        std::clog << "added " << argv[i] << "\n";
-    }
-
-    Proc self(getpid());
-
-    for (;;) {
-        char buf[8192];
-        ssize_t received = read(fd, buf, sizeof buf);
-        if (received == 0)
-            break;
-        const char *e = buf + received;
-
-        struct fanotify_event_metadata *data;
-        for (char *p = buf; p < e; p += data->event_len) {
-            try {
-                data = (struct fanotify_event_metadata *)p;
-                FDCloser fd(data->fd);
-                int flags = fcntl(data->fd, F_GETFL);
-
-                std::cout
-                    << "mask: " << FanMask(data->mask)
-                    << ", fd: " << data->fd
-                    << ", pid: " << data->pid
-                    << ", file: " << self.filePath(data->fd)
-                    << ", command: " << Proc(data->pid).commandLine()
-                    << "\n";
-            }
-            catch (const Errno &e) {
-                std::clog << e << "\n";
+        Proc self(getpid());
+        for (;;) {
+            char buf[8192];
+            ssize_t received = read(fd, buf, sizeof buf);
+            switch (received) {
+                case 0:
+                    return 0;
+                case -1:
+                    throw Errno("read");
+                default: {
+                    const char *e = buf + received;
+                    struct fanotify_event_metadata *data;
+                    for (char *p = buf; p < e; p += data->event_len) {
+                        data = (struct fanotify_event_metadata *)p;
+                        FDCloser fd(data->fd);
+                        std::cout
+                            << "mask: " << FanMask(data->mask)
+                            << ", fd: " << data->fd
+                            << ", pid: " << data->pid
+                            << ", file: " << self.filePath(data->fd)
+                            << ", command: " << Proc(data->pid).commandLine()
+                            << "\n";
+                    }
+                    break;
+                }
             }
         }
+    }
+    catch (const std::exception &ex) {
+        std::cerr << "exception: " << ex << "\n";
     }
 }
