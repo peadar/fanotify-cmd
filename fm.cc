@@ -18,11 +18,11 @@ public:
     typedef int syserror_t;
 private:
     syserror_t err;
-    const char *str;
+    std::string str;
     mutable std::string formattedText;
 public:
     const char *what() const throw() override;
-    Errno(const char *str_, syserror_t err_ = -1) : str(str_), err(err_ == -1 ? errno : err) {}
+    Errno(const std::string &str_, syserror_t err_ = -1) : str(str_), err(err_ == -1 ? errno : err_) {}
 };
 
 struct FanMask {
@@ -39,7 +39,7 @@ struct FDCloser {
 
 struct Proc {
     pid_t pid;
-    std::string procfsPath(const char *stem, ...); 
+    std::string procfsPath(const char *stem, ...);
     std::string readData(int fd);
 public:
     Proc(pid_t pid_) : pid(pid_) { }
@@ -58,12 +58,16 @@ operator << (std::ostream &os, const FanMask &e) {
     static std::pair<uint64_t, const char *> table[] = {
         ENT(FAN_ACCESS),
         ENT(FAN_OPEN),
+        ENT(FAN_DELETE),
+        ENT(FAN_DELETE_SELF),
+        ENT(FAN_ATTRIB),
         ENT(FAN_MODIFY),
         ENT(FAN_CLOSE_WRITE),
         ENT(FAN_CLOSE_NOWRITE),
         ENT(FAN_Q_OVERFLOW),
         ENT(FAN_ACCESS_PERM),
         ENT(FAN_OPEN_PERM),
+        ENT(FAN_ONDIR),
         { 0, 0 }
     };
     #undef ENT
@@ -144,8 +148,9 @@ Proc::filePath(int fd)
     char buf[PATH_MAX];
     int rc = readlink(name.c_str(), buf, sizeof buf - 1);
     if (rc == -1)
-        throw Errno("readlink");
-    buf[rc] = 0;
+        ; // throw Errno(std::string("readlink ") + name);
+    else
+       buf[rc] = 0;
     return buf;
 }
 
@@ -155,10 +160,15 @@ usage(std::ostream &os)
     os << "usage: [options] <files...>" 
         << "\nOptions:"
         << "\n\t-a:\tmonitor access"
+        << "\n\t-A:\tmonitor attribute change"
+        << "\n\t-c:\tmonitor creation"
+        << "\n\t-d:\tmonitor deletion"
+        << "\n\t-D:\tmonitor deletion of self"
         << "\n\t-m:\tmonitor modify"
         << "\n\t-o:\tmonitor open"
         << "\n\t-r:\tmonitor close (read)"
         << "\n\t-w:\tmonitor close (write)"
+        << "\n\t-+:\tmonitor changes on directories"
         << "\n";
     exit(1);
 }
@@ -168,13 +178,18 @@ main(int argc, char *argv[])
 {
     uint64_t mask = 0;
     int c;
-    while ((c = getopt(argc, argv, "aomrwh")) != -1) {
+    while ((c = getopt(argc, argv, "aAcdDomrwh+")) != -1) {
         switch (c) {
             case 'a': mask |= FAN_ACCESS; break;
+            case 'A': mask |= FAN_ATTRIB; break;
             case 'm': mask |= FAN_MODIFY; break;
+            case 'c': mask |= FAN_CREATE; break;
+            case 'd': mask |= FAN_DELETE; break;
+            case 'D': mask |= FAN_DELETE_SELF; break;
             case 'o': mask |= FAN_OPEN; break;
             case 'r': mask |= FAN_CLOSE_NOWRITE; break;
             case 'w': mask |= FAN_CLOSE_WRITE; break;
+            case '+': mask |= FAN_ONDIR; break;
             case 'h': usage(std::cout);
             default:
                 usage(std::clog);
@@ -187,13 +202,13 @@ main(int argc, char *argv[])
         mask = FAN_MODIFY|FAN_CLOSE;
     try {
         std::clog << "checking for events " << FanMask(mask) << "\n";
-        int fd = fanotify_init(FAN_CLASS_NOTIF, O_RDONLY);
+        int fd = fanotify_init(FAN_CLASS_NOTIF|FAN_REPORT_FID|FAN_REPORT_DIR_FID, O_RDONLY);
         if (fd == -1)
             throw Errno("fanotify_init");
 
         for (size_t i = optind; i < argc; ++i)
             if (fanotify_mark(fd, FAN_MARK_ADD, mask, AT_FDCWD, argv[i]) == -1)
-                throw Errno("fanotify_mark failed");
+                throw Errno(std::string("fanotify_mark failed for ") + argv[i]);
 
         Proc self(getpid());
         for (;;) {
@@ -206,9 +221,9 @@ main(int argc, char *argv[])
                     throw Errno("read");
                 default: {
                     const char *e = buf + received;
-                    struct fanotify_event_metadata *data;
-                    for (char *p = buf; p < e; p += data->event_len) {
-                        data = (struct fanotify_event_metadata *)p;
+                    const struct fanotify_event_metadata *data;
+                    for (const char *p = buf; p < e; ) {
+                        data = (const struct fanotify_event_metadata *)p;
                         FDCloser fd(data->fd);
                         std::cout
                             << "mask: " << FanMask(data->mask)
@@ -217,6 +232,25 @@ main(int argc, char *argv[])
                             << ", file: " << self.filePath(data->fd)
                             << ", command: " << Proc(data->pid).commandLine()
                             << "\n";
+                        const char *emsg = p + data->event_len;
+                        for (p += sizeof *data; p < emsg; ) {
+                           auto hdr = (fanotify_event_info_header *)p;
+                           p += hdr->len;
+                           std::cout << " got header type " << int(hdr->info_type) << "\n";
+                           switch (hdr->info_type) {
+                              case FAN_EVENT_INFO_TYPE_FID: {
+                                 std::cout << " got FID header\n";
+                                 auto *fid = (const fanotify_event_info_fid *)hdr;
+                                 getppid();
+                                 break;
+                              }
+                              case FAN_EVENT_INFO_TYPE_DFID: {
+                                 std::cout << " got DFID header\n";
+                                 break;
+                              }
+
+                           }
+                        }
                     }
                     break;
                 }
